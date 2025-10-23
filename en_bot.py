@@ -21,6 +21,8 @@ import configparser
 # from bs4 import BeautifulSoup
 # import curlify
 # import webbrowser
+import logging
+
 
 # Читаем конфиг
 config = configparser.ConfigParser()
@@ -37,20 +39,30 @@ LANG = config['Settings']['Lang']
 CHECK_INTERVAL = int(config['Settings']['Check_interval'])
 TIMELEFT_ALERT1 = int(config['Settings']['Timeleft_alert1'])
 TIMELEFT_ALERT2 = int(config['Settings']['Timeleft_alert2'])
+CODE_PREFIX_LIST = ['&', ';', '/']
+ADMIN_HANDLES = [f"@{name}" for name in ADMIN_USERNAMES]
+LOGFILE = config['Settings'].get('DebugFile')
+LOGLEVEL = int(config['Settings'].get('DebugLevel', 20))
 
 with open('yandex_api.txt', 'r', encoding='utf8') as yandex_api_file:
     YANDEX_API_PATTERN = yandex_api_file.read()
 
 executable_dir = os.path.dirname(sys.executable)
 folder_path = os.path.join(executable_dir, 'level_snapshots')
-print(folder_path)
 if not os.path.exists(folder_path):
     os.makedirs(folder_path)
 
 CUR_PARAMS = {}                 # словарь с текущими состояниями слежения в чатах
 telebot.apihelper.ENABLE_MIDDLEWARE = True  # Разрешаем MIDDLEWARE до создания бота
 BOT = telebot.TeleBot(config['Settings']['Token'], num_threads=int(config['Settings']['Threads']))  # еще вариант с потоками threaded=False
+me = BOT.get_me()
 
+if LOGFILE:
+    logging.basicConfig(filename=LOGFILE, filemode='a', format='[%(asctime)s] %(name)s %(levelname)s: %(message)s', level=LOGLEVEL)
+
+LOGGER = logging.getLogger(f'{me.first_name}')
+
+LOGGER.info(folder_path)
 
 # Предварительная обработка команд
 @BOT.middleware_handler(update_types=['message'])
@@ -59,18 +71,18 @@ def modify_message(bot_instance, message):
         return
     try:
         cmd = message.text.split('@')[0].split()[0].lower()[1:]
-        # print(f"{message.from_user.username}: {cmd}: {message}")
+        LOGGER.info(f"{message.from_user.username}: {message.text}")
     except IndexError as e:
-        print(f"Unparsed {message}")
+        LOGGER.debug(f"Unparsed {message}")
         cmd = '/incorrect_cmd'
         message.text = '/incorrect_cmd' 
     # Запрет всех команд в чате, кроме тех, которые могут работать в неавторизованном чате, перенаправляем на handler INCORRECT_CHAT
     if cmd not in ('help', 'start', 'auth', 'get_chat_id', '*', 'geo', 'leave_chat', 'test') and message.chat.id not in CUR_PARAMS:
-        message.text = '/incorrect_chat'
+        message.text = f'/incorrect_chat {message.text}'
         return
     # Запрет авторизации и загрузки из файла от всех, кроме админов, перенаправляем INCORRECT_USER
     if cmd in ('auth', 'stop_auth', 'load_old_json', 'open_browser', 'leave_chat') and message.from_user.username not in ADMIN_USERNAMES:
-        message.text = '/incorrect_user'
+        message.text = f'/incorrect_user {message.text}'
         return
 
 
@@ -194,7 +206,7 @@ def check_engine(cur_chat_id, topic_id=None):
             BOT.send_message(cur_chat_id, 'Ошибка авторизации', message_thread_id=topic_id)
             return
         case 5:
-            print("Game hasn't started yet, continue monitoring", message_thread_id=topic_id)
+            LOGGER.info("Game hasn't started yet, continue monitoring", message_thread_id=topic_id)
             return True  # игра еще не началась, продолжаем мониторить
         case 6 | 17:
             BOT.send_message(cur_chat_id, 'Игра закончилась', message_thread_id=topic_id)
@@ -342,13 +354,13 @@ def monitoring_func(cur_chat_id, topic_id=None):
     start_time = datetime.datetime.now()
     BOT.send_message(cur_chat_id, text='Мониторинг включен', message_thread_id=topic_id)
     while CUR_PARAMS[cur_chat_id]['monitoring_flag']:
-        print(f'Слежение за игрой в чате {cur_chat_id} работает {datetime.datetime.now()-start_time}')
+        LOGGER.info(f'Слежение за игрой в чате {cur_chat_id} работает {datetime.datetime.now()-start_time}')
         sleep(CHECK_INTERVAL)
         try:
             if not (check_engine(cur_chat_id, topic_id)):
                 break
         except:
-            print('Ошибка функции check_engine, продолжаю мониторинг')
+            LOGGER.info('Ошибка функции check_engine, продолжаю мониторинг')
     CUR_PARAMS[cur_chat_id]['monitoring_flag'] = False
     BOT.send_message(cur_chat_id, text='Мониторинг выключен', message_thread_id=topic_id)
 
@@ -393,6 +405,7 @@ def auth(message):
 
     if len(input_list) > 6 or len(input_list) < 5:
         BOT.send_message(message.chat.id, 'Недостаточно аргументов, введите команду в формате /auth домен id_игры логин пароль [id_чата]')
+        # BOT.send_message(message.chat.id, )
         return
 
     if len(input_list) == 6 and input_list[5].replace('-', '').isdigit():
@@ -402,6 +415,8 @@ def auth(message):
     else:
         BOT.send_message(message.chat.id, 'Неверный формат id чата')
         return
+
+    chat_info = BOT.get_chat(cur_chat_id)
 
     if not input_list[2].isdigit():
         BOT.send_message(message.chat.id, 'Неверный формат id игры')
@@ -452,7 +467,7 @@ def auth(message):
             BOT.send_message(message.chat.id, 'Пользователь не подтвердил e-mail')
             return
         case 0:
-            print('Авторизация успешна')
+            LOGGER.info('Авторизация успешна')
             try:
                 # Получаем информацию об игре
                 cur_json = my_session.get(f'https://{my_domain}/GameEngines/Encounter/Play/{my_game_id}?json=1').json()
@@ -460,7 +475,7 @@ def auth(message):
                 BOT.send_message(message.chat.id, 'Ошибка запроса авторизации, возможно неверно указан id игры')
                 return
 
-            BOT.send_message(message.chat.id, 'Авторизация успешна')  # Только если успешна, то заново инициализируем словарь параметров чата
+            # Только если успешна, то заново инициализируем словарь параметров чата
             CUR_PARAMS[cur_chat_id] = {
                 'cur_json': cur_json,
                 'session': my_session,
@@ -476,7 +491,10 @@ def auth(message):
                 'driver': None,
                 'sector_closers': {},
                 'bonus_closers': {},
-                'last_coords': None}
+                'last_coords': None
+            }
+            CUR_PARAMS[cur_chat_id]['chat_name'] = chat_info.title if chat_info.title else 'Unknown'
+            BOT.send_message(message.chat.id, f"Авторизация успешна. Игра {my_domain}#{my_game_id} добавлена к чату {CUR_PARAMS[cur_chat_id]['chat_name']}")  
 
             # запускаем firefox браузер, который будем использовать для скриншотов уровня и скринов маршрутов
             # print('Запускаю виртуальный браузер')
@@ -565,6 +583,7 @@ def game_monitor(message):
 
 @BOT.message_handler(commands=['accept_codes', 'sector_monitor', 'bonus_monitor', 'route_builder'])
 def switch_flag(message):
+    LOGGER.debug(f"Switch flag: {message}")
     topic_id = get_topic_from_message(message)
     d = {'accept_codes': 'Прием кодов',
          'sector_monitor': 'Мониторинг секторов',
@@ -732,13 +751,24 @@ def leave_chat(message):
 # Обработка ошибок, которые фильтрует middleware_handler
 @BOT.message_handler(commands=['incorrect_chat', 'incorrect_user','incorrect_cmd'])
 def send_error(message):
-    match message.text:
+    LOGGER.debug(f"send_error {message}")
+    topic_id = get_topic_from_message(message)
+    cmd = message.text.split(' ')
+    match cmd[0]:
         case '/incorrect_chat':
-            BOT.send_message(message.chat.id, 'Команда доступна только в авторизованном чате')
+            if message.chat.id in CUR_PARAMS:
+                chat_name = CUR_PARAMS[message.chat.id].get('chat_name', 'Unknown') 
+                BOT.send_message(message.chat.id, f"Команда доступна только в авторизованном чате {chat_name}", message_thread_id=topic_id)
+                LOGGER.debug(f"Incorrect chat {message}")
+            else:
+                BOT.send_message(message.chat.id, f"Авторизация бота незавершена. Обратитесь к {ADMIN_HANDLES}", message_thread_id=topic_id)
+                LOGGER.debug(f"Received while unauthorized {message}")
         case '/incorrect_user':
-            BOT.send_message(message.chat.id, 'Нет прав на данную команду')
+            BOT.send_message(message.chat.id, f"Нет прав на данную команду, обратитесь к {ADMIN_HANDLES}", message_thread_id=topic_id)
+            LOGGER.debug(f"Incorrect user {message}")
         case '/incorrect_cmd':
-            BOT.send_message(message.chat.id, 'Бот не умеет обрабатывать подобные сообщения')
+            LOGGER.debug(f"Unexpected: {message}")
+            BOT.send_message(message.chat.id, 'Бот не умеет обрабатывать подобные сообщения', message_thread_id=topic_id)
 
 
 @BOT.message_handler(commands=['load_old_json'])
@@ -763,7 +793,7 @@ def send_geo(message):
 @BOT.message_handler(func=lambda message: True)
 def send_answer(message):
     topic_id = get_topic_from_message(message)
-    if message.text[0] != '/':
+    if message.text[0] not in CODE_PREFIX_LIST:
         return
     if not (CUR_PARAMS[message.chat.id]['accept_codes']):
         BOT.send_message(message.chat.id, 'Прием кодов выключен! Для включения выполните /accept_codes', message_thread_id=topic_id)
@@ -828,4 +858,5 @@ def send_answer(message):
 
 if __name__ == '__main__':
     print('Bot is running')
+    LOGGER.info('Bot started')
     BOT.infinity_polling()
