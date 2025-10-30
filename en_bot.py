@@ -86,9 +86,6 @@ def modify_message(bot_instance, message):
         return
 
 
-def BOT_send_message():
-    pass
-
 def get_topic_from_message(message):
     try:
         if message.is_topic_message:
@@ -96,6 +93,7 @@ def get_topic_from_message(message):
     except Exception:
         pass
     return None
+
 
 # Парсинг текста на список координат и файл KML
 def gen_kml2(text):
